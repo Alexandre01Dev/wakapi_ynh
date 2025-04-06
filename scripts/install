@@ -7,193 +7,204 @@
 source _common.sh
 source /usr/share/yunohost/helpers
 
-### Install parameters are automatically saved as settings
-###
-### Settings are automatically loaded as bash variables
-### in every app script context, therefore typically these will exist:
-### - $domain
-### - $path
-### - $language
-### ... etc
-###
-### Resources defined in the manifest are provisioned prior to this script
-### and corresponding settings are also available, such as:
-### - $install_dir
-### - $port
-### - $db_name
-### ...
-###
-### $app is the app id (i.e. 'example' for first install,
-### or 'example__2', '__3'... for multi-instance installs)
-
 #=================================================
 # INITIALIZE AND STORE SETTINGS
 #=================================================
 
-# If you need to, you can define custom settings
-# (or remove this section entirely if not relevant for you)
-foo="bar"
-ynh_app_setting_set --key=foo --value=$foo
-
-ynh_app_setting_set --key=php_upload_max_filesize --value=50M
-ynh_app_setting_set --key=php_post_max_size --value=50M
+# Set upload limits for PHP for potential web-based imports
+ynh_app_setting_set --app=$app --key=php_upload_max_filesize --value=50M
+ynh_app_setting_set --app=$app --key=php_post_max_size --value=50M
 
 #=================================================
 # DOWNLOAD, CHECK AND UNPACK SOURCE
 #=================================================
-ynh_script_progression "Setting up source files..."
+ynh_script_progression --message="Installing Wakapi..." --weight=10
 
-### `ynh_setup_source` is used to install an app from a zip or tar.gz file,
-### downloaded from an upstream source, like a git repository.
-### `ynh_setup_source` use the file manifest.toml
+# Create the destination directory
+mkdir -p "$install_dir"
 
-# Download, check integrity, uncompress and patch the source from manifest.toml
-ynh_setup_source --dest_dir="$install_dir"
+# Download and install Wakapi
+ynh_exec_warn_less ynh_exec_as $app curl -L https://wakapi.dev/get | bash
 
-### $install_dir will automatically be initialized with some decent
-### permission by default... however, you may need to recursively reapply
-### ownership to all files such as after the ynh_setup_source step
+# Move the installed files to the install directory
+mv $HOME/.wakapi/* "$install_dir/"
+
+# Set appropriate permissions
 chown -R "$app:www-data" "$install_dir"
 
 #=================================================
-# APP INITIAL CONFIGURATION
+# CONFIGURE WAKAPI
 #=================================================
-ynh_script_progression "Adding $app's configuration files..."
+ynh_script_progression --message="Configuring Wakapi..." --weight=5
 
-### You can add specific configuration files.
-###
-### Typically, put your template conf file in ../conf/your_config_file
-### The template may contain strings such as __FOO__ or __FOO_BAR__,
-### which will automatically be replaced by the values of $foo and $foo_bar
-###
-### ynh_config_add will also keep track of the config file's checksum,
-### which later during upgrade may allow to automatically backup the config file
-### if it's found that the file was manually modified
-###
-### Check the documentation of `ynh_config_add` for more info.
+# Create the config.yml file
+cat > "$install_dir/config.yml" << EOF
+env: production
+quick_start: false
+skip_migrations: false
+enable_pprof: false
 
-ynh_config_add --template="some_config_file" --destination="$install_dir/some_config_file"
+server:
+  listen_ipv4: 127.0.0.1
+  listen_ipv6: ::1
+  listen_socket:
+  listen_socket_mode: 0666
+  timeout_sec: 30
+  tls_cert_path:
+  tls_key_path:
+  port: $port
+  base_path: $path
+  public_url: https://$domain$path
 
-# FIXME: this should be handled by the core in the future
-### You may need to use chmod 600 instead of 400,
-### for example if the app is expected to be able to modify its own config
-chmod 400 "$install_dir/some_config_file"
-chown "$app:$app" "$install_dir/some_config_file"
+app:
+  leaderboard_enabled: true
+  leaderboard_scope: 7_days
+  leaderboard_generation_time: '0 0 6 * * *,0 0 18 * * *'
+  leaderboard_require_auth: false
+  aggregation_time: '0 15 2 * * *'
+  report_time_weekly: '0 0 18 * * 5'
+  data_cleanup_time: '0 0 6 * * 0'
+  inactive_days: 7
+  import_enabled: true
+  import_backoff_min: 5
+  import_max_rate: 24
+  import_batch_size: 50
+  heartbeat_max_age: '4320h'
+  data_retention_months: -1
+  max_inactive_months: 12
+  warm_caches: true
+  custom_languages:
+    vue: Vue
+    jsx: JSX
+    tsx: TSX
+    cjs: JavaScript
+    ipynb: Python
+    svelte: Svelte
+    astro: Astro
+  avatar_url_template: api/avatar/{username_hash}.svg
+  date_format: Mon, 02 Jan 2006
+  datetime_format: Mon, 02 Jan 2006 15:04
 
-### For more complex cases where you want to replace stuff using regexes,
-### you shoud rely on ynh_replace (which is basically a wrapper for sed)
-### When doing so, you also need to manually call ynh_store_file_checksum
-###
-### ynh_replace --match="match_string" --replace="replace_string" --file="$install_dir/some_config_file"
-### ynh_store_file_checksum "$install_dir/some_config_file"
+db:
+  host:
+  port:
+  socket:
+  user:
+  password:
+  name: $install_dir/wakapi_db.db
+  dialect: sqlite3
+  charset: utf8mb4
+  max_conn: 10
+  ssl: false
+  automigrate_fail_silently: false
+
+security:
+  password_salt: $(ynh_string_random --length=32)
+  insecure_cookies: false
+  cookie_max_age: 172800
+  allow_signup: $signup_allowed
+  signup_captcha: false
+  invite_codes: true
+  disable_frontpage: false
+  expose_metrics: false
+  enable_proxy: false
+  trusted_header_auth: false
+  trusted_header_auth_key: Remote-User
+  trust_reverse_proxy_ips:
+  signup_max_rate: 5/1h
+  login_max_rate: 10/1m
+  password_reset_max_rate: 5/1h
+
+sentry:
+  dsn:
+  enable_tracing: false
+  sample_rate: 0.75
+  sample_rate_heartbeats: 0.1
+
+subscriptions:
+  enabled: false
+  expiry_notifications: true
+  stripe_api_key:
+  stripe_secret_key:
+  stripe_endpoint_secret:
+  standard_price_id:
+
+mail:
+  enabled: $with_mail
+  provider: smtp
+  sender: Wakapi <$admin_email>
+
+  smtp:
+    host: localhost
+    port: 25
+    username:
+    password:
+    tls: false
+EOF
+
+# Ensure config file has appropriate permissions
+chmod 400 "$install_dir/config.yml"
+chown "$app:$app" "$install_dir/config.yml"
 
 #=================================================
 # SYSTEM CONFIGURATION
 #=================================================
-ynh_script_progression "Adding system configurations related to $app..."
+ynh_script_progression --message="Adding system configurations related to $app..." --weight=3
 
-### `ynh_config_add_phpfpm` is used to set up a PHP config.
-### You can remove it if your app doesn't use PHP.
-### `ynh_config_add_phpfpm` will use the files conf/extra_php-fpm.conf
-### If you're not using these lines:
-###   - You can remove these files in conf/.
-###   - Remove the section "BACKUP THE PHP-FPM CONFIGURATION" in the backup script
-###   - Remove also the section "REMOVE PHP-FPM CONFIGURATION" in the remove script
-###   - As well as the section "RESTORE THE PHP-FPM CONFIGURATION" in the restore script
-###     with the reload at the end of the script.
-###   - And the section "PHP-FPM CONFIGURATION" in the upgrade script
-
-# Create a PHP-FPM config (with conf/extra_php-fpm.conf being appended to it)
-ynh_config_add_phpfpm
-
-# Create a dedicated NGINX config using the conf/nginx.conf template
+# Create a dedicated NGINX config
 ynh_config_add_nginx
 
-### `ynh_config_add_systemd` is used to configure a systemd script for an app.
-### It can be used for apps that use sysvinit (with adaptation) or systemd.
-### Have a look at the app to be sure this app needs a systemd script.
-### `ynh_config_add_systemd` will use the file conf/systemd.service
-### If you're not using these lines:
-###   - You can remove those files in conf/.
-###   - Remove the section "BACKUP SYSTEMD" in the backup script
-###   - Remove also the section "STOP AND REMOVE SERVICE" in the remove script
-###   - As well as the section "RESTORE SYSTEMD" in the restore script
-###   - And the section "SETUP SYSTEMD" in the upgrade script
-
 # Create a dedicated systemd config
-ynh_config_add_systemd
+cat > /etc/systemd/system/$app.service << EOF
+[Unit]
+Description=Wakapi - Self-hosted WakaTime compatible API
+After=network.target
 
-### `yunohost service add` integrates a service in YunoHost. It then gets
-### displayed in the admin interface and through the others `yunohost service` commands.
-### (N.B.: this line only makes sense if the app adds a service to the system!)
-### If you're not using these lines:
-###   - You can remove these files in conf/.
-###   - Remove the section "REMOVE SERVICE INTEGRATION IN YUNOHOST" in the remove script
-###   - As well as the section "INTEGRATE SERVICE IN YUNOHOST" in the restore script
-###   - And the section "INTEGRATE SERVICE IN YUNOHOST" in the upgrade script
+[Service]
+Type=simple
+User=$app
+Group=$app
+WorkingDirectory=$install_dir
+ExecStart=$install_dir/wakapi
+Restart=always
+RestartSec=3
 
-### Additional options starting with 3.8:
-###
-### --needs_exposed_ports "$port" a list of ports that needs to be publicly exposed
-###                               which will then be checked by YunoHost's diagnosis system
-###                               (N.B. DO NOT USE THIS if the port is only internal!!!)
-###
-### --test_status "some command"  a custom command to check the status of the service
-###                               (only relevant if 'systemctl status' doesn't do a good job)
-###
-### --test_conf "some command"    some command similar to "nginx -t" that validates the conf of the service
-###
-### Re-calling 'yunohost service add' during the upgrade script is the right way
-### to proceed if you later realize that you need to enable some flags that
-### weren't enabled on old installs (be careful it'll override the existing
-### service though so you should re-provide all relevant flags when doing so)
-yunohost service add "$app" --description="A short description of the app" --log="/var/log/$app/$app.log"
+[Install]
+WantedBy=multi-user.target
+EOF
 
-### `ynh_config_add_logrotate` is used to configure a logrotate configuration for the logs of this app.
-### Use this helper only if there is effectively a log file for this app.
-### If you're not using this helper:
-###   - Remove the section "BACKUP LOGROTATE" in the backup script
-###   - Remove also the section "REMOVE LOGROTATE CONFIGURATION" in the remove script
-###   - As well as the section "RESTORE THE LOGROTATE CONFIGURATION" in the restore script
-###   - And the section "SETUP LOGROTATE" in the upgrade script
+systemctl daemon-reload
 
-# Use logrotate to manage application logfile(s)
+# Integrate service in YunoHost
+yunohost service add "$app" --description="Self-hosted WakaTime compatible time tracking API" --log="/var/log/$app/$app.log"
+
+# Configure logrotate
 ynh_config_add_logrotate
 
-# Create a dedicated Fail2Ban config
-ynh_config_add_fail2ban --logpath="/var/log/nginx/${domain}-error.log" --failregex="Regex to match into the log for a failed login"
-
 #=================================================
-# SETUP APPLICATION WITH CURL
+# CREATE ADMIN USER
 #=================================================
+ynh_script_progression --message="Creating admin user..." --weight=2
 
-### Use these lines only if the app installation needs to be finalized through
-### web forms. We generally don't want to ask the final user,
-### so we're going to use curl to automatically fill the fields and submit the
-### forms.
+# Wait for service to be up and running
+ynh_systemctl start $app
+sleep 5
 
-# Installation with curl
-ynh_script_progression "Finalizing installation..."
-ynh_local_curl "/INSTALL_PATH" "key1=value1" "key2=value2" "key3=value3"
+# Create admin user (using curl)
+ynh_local_curl "${domain}${path}/api/signup" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$admin\",\"email\":\"$admin_email\",\"password\":\"$password\"}"
 
 #=================================================
 # START SYSTEMD SERVICE
 #=================================================
-ynh_script_progression "Starting $app's systemd service..."
-
-### `ynh_systemctl` is used to start a systemd service for an app.
-### Only needed if you have configure a systemd service
-### If you're not using these lines:
-###   - Remove the section "STOP SYSTEMD SERVICE" and "START SYSTEMD SERVICE" in the backup script
-###   - As well as the section "START SYSTEMD SERVICE" in the restore script
-###   - As well as the section"STOP SYSTEMD SERVICE" and "START SYSTEMD SERVICE" in the upgrade script
-###   - And the section "STOP SYSTEMD SERVICE" and "START SYSTEMD SERVICE" in the change_url script
+ynh_script_progression --message="Starting $app's service..." --weight=1
 
 # Start a systemd service
-ynh_systemctl --service="$app" --action="start"
+ynh_systemctl start "$app"
 
 #=================================================
 # END OF SCRIPT
 #=================================================
 
-ynh_script_progression "Installation of $app completed"
+ynh_script_progression --message="Installation of $app completed" --last
